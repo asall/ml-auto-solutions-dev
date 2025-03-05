@@ -65,28 +65,56 @@ with models.DAG(
       task_owner=test_owner.Maggie_Z,
   )
 
-default_unittest_args = {
-    "retries": 0,
-}
-
-with models.DAG(
-    dag_id="project_bite_tpu_unittests",
-    schedule=SCHEDULED_TIME,
-    tags=[
-        "sparsity_diffusion_devx",
-        "tpu",
-        "axlearn",
-        "bite",
-    ],
-    start_date=datetime.datetime(2025, 2, 24),
-    catchup=False,
-    default_args=default_unittest_args,
-) as dag:
-  unittests = config.get_bite_tpu_unittests_config(
+  # Trillium (v6e) with JAX 0.5.1
+  unittests_v6e_051 = config.get_bite_tpu_unittests_config(
       tpu_version=TpuVersion.TRILLIUM,
       tpu_cores=4,
       tpu_zone=Zone.EUROPE_WEST4_A.value,
       runtime_version=RuntimeVersion.V2_ALPHA_TPUV6.value,
       time_out_in_min=180,
+      jax_version='0.5.1',
+      test_suffix='v6e_051',
+      task_owner=test_owner.Andrew_S,
+  )
+  # Trillium (v6e) with JAX nightly
+  unittests_v6e_nightly = config.get_bite_tpu_unittests_config(
+      tpu_version=TpuVersion.TRILLIUM,
+      tpu_cores=4,
+      tpu_zone=Zone.EUROPE_WEST4_A.value,
+      runtime_version=RuntimeVersion.V2_ALPHA_TPUV6.value,
+      time_out_in_min=180,
+      test_suffix='v6e_nightly',
+      task_owner=test_owner.Andrew_S,
+  )
+  # V5P with JAX 0.5.1
+  unittests_v5p_051 = config.get_bite_tpu_unittests_config(
+      tpu_version=TpuVersion.V5P,
+      tpu_cores=8,
+      tpu_zone=Zone.EUROPE_WEST4_B.value,
+      runtime_version=RuntimeVersion.TPU_UBUNTU2204_BASE.value,
+      time_out_in_min=180,
+      jax_version='0.5.1',
+      test_suffix='v5p_051',
+      task_owner=test_owner.Andrew_S,
+  )
+  # V5P with JAX nightly
+  unittests_v5p_nightly = config.get_bite_tpu_unittests_config(
+      tpu_version=TpuVersion.V5P,
+      tpu_cores=8,
+      tpu_zone=Zone.EUROPE_WEST4_B.value,
+      runtime_version=RuntimeVersion.TPU_UBUNTU2204_BASE.value,
+      time_out_in_min=180,
+      test_suffix='v5p_nightly',
+      task_owner=test_owner.Andrew_S,
+  )
+  # V5e with JAX 0.5.1
+  unittests_v5e_051 = config.get_bite_tpu_unittests_config(
+      tpu_version=TpuVersion.V5E,
+      tpu_cores=8,
+      tpu_zone=Zone.EUROPE_WEST4_B.value,
+      runtime_version=RuntimeVersion.TPU_UBUNTU2204_BASE.value,
+      time_out_in_min=180,
+      jax_version='0.5.1',
+      test_suffix='v5e_051',
       task_owner=test_owner.Andrew_S,
   )

@@ -318,7 +318,7 @@ def delete_queued_resource(qualified_name: airflow.XComArg):
 
 def kill_process_by_pid() -> str:
   return f"""accelerator_type=\${{1}}
-  if [[ \${{accelerator_type}} =~ ^v5.* ]]
+  if [[ \${{accelerator_type}} =~ ^v5.* || \${{accelerator_type}} =~ ^v6.* ]]
   then
     device_name=vfio/*
   else
