@@ -110,9 +110,11 @@ def dockerfile_build_cmd(jax_version):
 
   return (
       """cat > Dockerfile_CI <<EOF
-FROM cimg/python:3.10
+FROM python:3.10-slim
 WORKDIR /workspace
 COPY run_tpu_tests.sh /workspace/
+RUN apt update -y
+RUN apt install -y git
 RUN git clone https://github.com/apple/axlearn.git
 WORKDIR /workspace/axlearn
 RUN pip install --upgrade pip
@@ -127,7 +129,6 @@ EOF
 """
   )
 
-
 def get_bite_tpu_unittests_config(
     tpu_version: TpuVersion,
     tpu_cores: int,
@@ -139,12 +140,15 @@ def get_bite_tpu_unittests_config(
     jax_version: Optional[str] = None,
     test_suffix: Optional[str] = None,
 ):
+  
+  if jax_version:
+    jax_install_cmd = common.set_up_jax_version(jax_version)
+  else:
+    jax_install_cmd = common.set_up_nightly_jax()
+
   unittest_setupcmds = (
       # Need to install drivers in the TPU VM as well as in the docker image
-      ## "pip install -U --pre libtpu-nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html",
-      ## "pip install --pre -U jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html",
-      ## "pip install git+https://github.com/google/jax",
-      *common.set_up_nightly_jax(),
+      *jax_install_cmd,
       # create configuration files needed
       dockerfile_build_cmd(jax_version),
       # create script to run the tests inside of the container
