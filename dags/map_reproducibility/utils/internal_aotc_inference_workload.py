@@ -1,4 +1,4 @@
-# Copyright 2024 Google LLC
+# Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,53 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Workload functions for AOTC reproducibility benchmarks."""
+"""Workload functions for AOTC inference reproducibility benchmarks."""
 
 import os
 import tempfile
 
 from airflow.decorators import task
 from airflow.hooks.subprocess import SubprocessHook
-from airflow.operators.python import get_current_context
+from google.cloud import storage
 from dags.map_reproducibility.utils.common_utils import configure_project_and_cluster
 from dags.map_reproducibility.utils.common_utils import install_helm_cmds
 from dags.map_reproducibility.utils.common_utils import namespace_cmds
 from dags.map_reproducibility.utils.common_utils import internal_wait_for_jobs_cmds
-from dags.map_reproducibility.utils.common_utils import cleanup_cmds, cleanup_all_runs_cmds
+from dags.map_reproducibility.utils.common_utils import cleanup_cmds
 from dags.map_reproducibility.utils.common_utils import git_cookie_authdaemon
 from dags.map_reproducibility.utils.common_utils import clone_recipes_gob, clone_internal_recipes_gob
-from dags.map_reproducibility.utils.common_utils import helm_apply_cmds_internal_run
-from dags.map_reproducibility.utils.common_utils import get_bq_writer_repo
-from dags.map_reproducibility.utils.benchmarkdb_utils import write_run
 from dags.map_reproducibility.utils.common_utils import get_internal_pre_workload_cmds, get_internal_pre_workload_job_name
 from dags.map_reproducibility.utils.common_utils import get_gpu_recipe_cmd
-from dags.map_reproducibility.utils.common_utils import get_bq_writer_path
 from dags.map_reproducibility.utils.common_utils import get_recipe_repo_path, get_internal_recipe_repo_path
-from dags.map_reproducibility.utils.common_utils import get_cluster, get_patheon_job_link
-from dags.map_reproducibility.utils.common_utils import calculate_maxtext_metrics, get_skip_steps_for_metrics_calculation
-from dags.map_reproducibility.utils.common_utils import copy_bucket_cmds_maxtext, get_job_gcs_bucket_folder
+from dags.map_reproducibility.utils.common_utils import get_cluster
 from dags.map_reproducibility.utils.common_utils import parse_internal_config_filename
+from dags.map_reproducibility.utils.common_utils_inference import helm_apply_cmds_internal_run_inference, extract_autoregressive_write_to_jsonl, copy_inference_output_cmds, write_jsonl_to_bigquery, get_gcs_output_location, BUCKET_NAME
 from dags.map_reproducibility.utils.common_utils import parse_internal_config_content
-from dags.map_reproducibility.utils.constants import Optimizer, KUEUE_NAME, NUM_STEPS
+from dags.map_reproducibility.utils.constants import KUEUE_NAME
 
 
 @task
-def run_internal_aotc_workload(
+def run_internal_aotc_inference_workload(
     relative_config_yaml_path,
     test_run=False,
-    backfill=False,
     timeout=None,
     image_version=None,
 ):
-  """Runs the AOTC workload benchmark.
+  """Runs the AOTC inference workload benchmark.
 
   Args:
     relative_config_yaml_path: Path to the config YAML relative to the repo root
   """
-  # Get the current context to access DAG ID
-  context = get_current_context()
-  dag_id = context["dag"].dag_id
-
   # Parse config from filename
   config_yaml_name = relative_config_yaml_path.rsplit("/", maxsplit=1)[
       -1
@@ -80,18 +70,20 @@ def run_internal_aotc_workload(
             ";".join(
                 git_cookie_authdaemon()
                 + clone_recipes_gob()
-                + clone_internal_recipes_gob()
-                + get_bq_writer_repo()
+                + (() if test_run else clone_internal_recipes_gob())
             ),
         ],
         cwd=tmpdir,
     )
 
     recipe_repo_root = get_recipe_repo_path(tmpdir)
-    bq_writer_repo_root = get_bq_writer_path(tmpdir)
 
     # Update paths now that we have the repo paths
-    internal_recipe_repo_root = get_internal_recipe_repo_path(tmpdir)
+    internal_recipe_repo_root = (
+        "/home/airflow/gcs/dags/dags/map_reproducibility"
+    )
+    if not test_run:
+      internal_recipe_repo_root = get_internal_recipe_repo_path(tmpdir)
     values_file_path = f"{internal_recipe_repo_root}/values/{values_name}.yaml"
     model_specific_values_file_path = (
         f"{internal_recipe_repo_root}/values/{config_yaml_name}_values.yaml"
@@ -116,18 +108,8 @@ def run_internal_aotc_workload(
     # Parse the config content now that we have the file path
     config = parse_internal_config_content(full_config_yaml_path, config=config)
     job_name = get_internal_pre_workload_job_name(
-        model_id=config.MODEL_ID,
-        precision=config.PRECISION,
-        num_gpus=config.NUM_GPUS,
-        framework=config.FRAMEWORK,
-        cluster=config.HYPERCOMPUTER,
+        config.MODEL_ID, config.FRAMEWORK
     )
-    pantheon_link = get_patheon_job_link(
-        region=cluster_region, cluster_name=cluster, job_name=job_name
-    )
-
-    # Print DAG ID with job name
-    print(f"Running job '{job_name}' in DAG '{dag_id}'")
 
     container_timeout = int(timeout) - 4
     print(f"container timeout is {container_timeout}")
@@ -146,7 +128,7 @@ def run_internal_aotc_workload(
                 + install_helm_cmds()
                 + namespace_cmds()
                 + get_internal_pre_workload_cmds(job_name=job_name)
-                + helm_apply_cmds_internal_run(
+                + helm_apply_cmds_internal_run_inference(
                     config.FRAMEWORK,
                     config.HYPERCOMPUTER,
                     full_config_yaml_path,
@@ -154,11 +136,12 @@ def run_internal_aotc_workload(
                     values_file_path,
                     docker_image,
                     cluster_name=cluster,
-                    kueue_name=None,  # not enabled until kueue-tas is fixed
+                    kueue_name=KUEUE_NAME,
                     additional_cmds=f" --set workload.gpus={config.NUM_GPUS} ",
+                    test_run=test_run,
                 )
                 + internal_wait_for_jobs_cmds(timeout=container_timeout)
-                + copy_bucket_cmds_maxtext(tmpdir)
+                + copy_inference_output_cmds(tmpdir)
                 + cleanup_cmds()
             ),
         ],
@@ -166,64 +149,21 @@ def run_internal_aotc_workload(
     )
     assert result.exit_code == 0, f"Command failed with code {result.exit_code}"
 
-    log_location = os.path.join(tmpdir, "tflog/metrics")
-
-    comment = (
-        "internal recipes regression tests"
-        if not backfill
-        else "internal recipes regression tests backfill"
+    output_location = os.path.join(tmpdir, "output.txt")
+    jsonl_location = os.path.join(tmpdir, "output.jsonl")
+    extract_autoregressive_write_to_jsonl(
+        job_name, output_location, jsonl_location
     )
-    is_db_test_run = False if backfill else test_run
-    gcs_bucket = get_job_gcs_bucket_folder(job_name)
-    print(f"GCS bucket is {gcs_bucket}")
+    write_jsonl_to_bigquery(jsonl_location)
+    gcs_output_location = get_gcs_output_location()
+    print(f"GCS output location is {gcs_output_location}")
 
-    # calculate mfu based on the config
-    skip_first_n_steps = get_skip_steps_for_metrics_calculation(config)
-    mfu, step_time = calculate_maxtext_metrics(
-        log_location,
-        config.HYPERCOMPUTER,
-        skip_first=skip_first_n_steps,
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(BUCKET_NAME)
+    destination_file_name = f"{job_name}_results.jsonl"
+    destination_blob_name = os.path.join(
+        gcs_output_location, destination_file_name
     )
-    print(f"mfu: {mfu}")
-    print(f"step_time: {step_time}")
-
-    write_run(
-        model_id=config.HELM_NAME_MODEL_ID,
-        hardware_id=config.HYPERCOMPUTER,
-        software_id=config.SOFTWARE_ID,
-        number_of_nodes=config.NUM_GPUS / 8,
-        number_of_chips=config.NUM_GPUS,
-        container_image_name=docker_image,
-        global_batch_size=config.per_device_batch_size * config.NUM_GPUS,
-        precision=config.PRECISION,
-        optimizer=Optimizer.ADAM,
-        seq_length=config.max_target_length,
-        median_step_time=step_time,
-        e2e_time=step_time * NUM_STEPS,
-        number_of_steps=NUM_STEPS,
-        mfu=mfu,
-        tokens_per_second=1,
-        writer_path=bq_writer_repo_root,
-        run_type="internal_perf_regression",
-        topology="",
-        comment=comment,
-        is_test=is_db_test_run,
-        gcs_metrics_bucket=gcs_bucket,
-        workload_others=str(config),
-        experiment_id=job_name,
-    )
-
-
-@task
-def cleanup_cml_workloads(cluster, cluster_region):
-  with tempfile.TemporaryDirectory() as tmpdir:
-    hook = SubprocessHook()
-    result = hook.run_command(
-        [
-            "bash",
-            "-c",
-            ";".join(cleanup_all_runs_cmds(cluster, cluster_region)),
-        ],
-        cwd=tmpdir,
-    )
-    assert result.exit_code == 0, f"Command failed with code {result.exit_code}"
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_filename(jsonl_location)
+    print(f"File {jsonl_location} uploaded to {gcs_output_location}.")
